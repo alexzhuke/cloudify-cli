@@ -243,7 +243,7 @@ def bootstrap(cloudify_packages, agent_local_key_path=None,
     agent_remote_key_path = _copy_agent_key(agent_local_key_path,
                                             agent_remote_key_path)
     _set_manager_endpoint_data()
-    _upload_provider_context(agent_remote_key_path, provider_context)
+    _upload_provider_context(ctx, agent_remote_key_path, provider_context)
     return True
 
 
@@ -326,6 +326,15 @@ def bootstrap_docker(cloudify_packages, docker_path=None, use_sudo=True,
 
     manager_ip = fabric.api.env.host_string
     lgr.info('initializing manager on the machine at {0}'.format(manager_ip))
+
+    if ctx.operation.retry_number > 0:
+        lgr.info('verifying management services are running...')
+        started = _wait_for_management(manager_ip, timeout=15)
+        if not started:
+            raise NonRecoverableError('management services are not running.')
+        _upload_provider_context(ctx, agent_remote_key_path, provider_context)
+        return True
+
     docker_exec_command = _install_docker_if_required(
         docker_path,
         use_sudo,
@@ -434,14 +443,16 @@ def bootstrap_docker(cloudify_packages, docker_path=None, use_sudo=True,
 
     lgr.info('waiting for cloudify management services to start')
     started = _wait_for_management(manager_ip, timeout=180)
-    ctx.instance.runtime_properties['containers_started'] = 'True'
     if not started:
         err = 'failed waiting for cloudify management services to start.'
         lgr.info(err)
         raise NonRecoverableError(err)
 
     _set_manager_endpoint_data()
-    _upload_provider_context(agent_remote_key_path, provider_context)
+    _upload_provider_context(ctx, agent_remote_key_path, provider_context)
+
+    ctx.instance.runtime_properties['containers_started'] = 'True'
+
     return True
 
 
@@ -612,8 +623,10 @@ def _update_manager_deployment(local_only=False):
         rest_client.manager.update_context('provider', provider_context)
 
 
-def _upload_provider_context(remote_agents_private_key_path,
+def _upload_provider_context(ctx,
+                             remote_agents_private_key_path,
                              provider_context=None):
+    ctx.logger.info('updating provider context on management server...')
     provider_context = provider_context or dict()
     cloudify_configuration = ctx.node.properties['cloudify']
     cloudify_configuration['cloudify_agent']['agent_key_path'] = \
